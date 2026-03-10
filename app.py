@@ -1,9 +1,16 @@
-import csv
-from pathlib import Path
 from datetime import datetime, time
+from io import StringIO
+from pathlib import Path
+import csv
+
 import streamlit as st
+from supabase import Client, create_client
 
 from timesheet import load_csv, monthly_summary
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://zuybwlgvjhmufqujpebo.supabase.co")
+# Use the ANON public key from Supabase (NOT the publishable key)
+SUPABASE_KEY = st.secrets.get("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1eWJ3bGd2amhtdWZxdWpwZWJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMTgyNzIsImV4cCI6MjA4ODY5NDI3Mn0.B2dBxK5NSKfFkez-bAHsrRnUUp6MrQZPGZgDAcBIVYs")
 
 DATA_FILE = Path("turni.csv")
 DETAIL_FILE = Path("turni_calcolati.csv")
@@ -11,26 +18,76 @@ SUMMARY_FILE = Path("riepilogo_mensile.csv")
 HISTORICAL_FILE = Path("guadagni_mensili_totali.csv")
 
 
-def ensure_csv_exists() -> None:
-    if not DATA_FILE.exists():
-        with DATA_FILE.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["data", "inizio", "fine"])
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def append_shift(day_str: str, start_str: str, end_str: str) -> None:
-    ensure_csv_exists()
-    with DATA_FILE.open("a", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([day_str, start_str, end_str])
+def _rows_to_results(rows: list[dict]):
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["data", "inizio", "fine"])
+    for row in rows:
+        writer.writerow([row["data"], row["inizio"], row["fine"]])
+    buffer.seek(0)
+
+    tmp_path = Path("_tmp_turni_from_db.csv")
+    tmp_path.write_text(buffer.getvalue(), encoding="utf-8")
+    return load_csv(tmp_path)
 
 
-def read_csv_as_dicts(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
+def fetch_turni_rows() -> list[dict]:
+    supabase = get_supabase()
+    response = (
+        supabase.table("turni")
+        .select("id,data,inizio,fine,created_at")
+        .order("data")
+        .order("inizio")
+        .execute()
+    )
+    return response.data or []
+
+
+def append_shift(day_str: str, start_str: str, end_str: str):
+    supabase = get_supabase()
+    response = (
+        supabase.table("turni")
+        .insert(
+            {
+                "data": day_str,
+                "inizio": start_str,
+                "fine": end_str,
+            }
+        )
+        .execute()
+    )
+    return response
+def test_supabase_connection() -> dict:
+    supabase = get_supabase()
+    response = supabase.table("turni").select("id", count="exact").limit(1).execute()
+    return {
+        "count": response.count,
+        "data": response.data,
+    }
+
+
+def delete_shifts_for_month(year: int, month: int) -> int:
+    supabase = get_supabase()
+    month_prefix = f"{year:04d}-{month:02d}"
+    rows = (
+        supabase.table("turni")
+        .select("id,data")
+        .gte("data", f"{month_prefix}-01")
+        .lt("data", f"{year + 1:04d}-01-01" if month == 12 else f"{year:04d}-{month + 1:02d}-01")
+        .execute()
+        .data
+        or []
+    )
+
+    ids = [row["id"] for row in rows if str(row.get("data", "")).startswith(month_prefix)]
+    if ids:
+        supabase.table("turni").delete().in_("id", ids).execute()
+    return len(ids)
 
 
 def save_csv(path: Path, rows: list[dict], fieldnames: list[str] | None = None) -> None:
@@ -47,60 +104,22 @@ def save_csv(path: Path, rows: list[dict], fieldnames: list[str] | None = None) 
             writer.writerows(rows)
 
 
-def delete_shifts_for_month(year: int, month: int) -> int:
-    ensure_csv_exists()
-    rows = read_csv_as_dicts(DATA_FILE)
-    kept = []
-    removed = 0
+def regenerate_outputs() -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    db_rows = fetch_turni_rows()
 
-    prefix = f"{year:04d}-{month:02d}-"
-
-    for row in rows:
-        if row.get("data", "").startswith(prefix):
-            removed += 1
-        else:
-            kept.append(row)
-
-    with DATA_FILE.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["data", "inizio", "fine"])
-        for r in kept:
-            writer.writerow([r["data"], r["inizio"], r["fine"]])
-
-    return removed
-
-
-def delete_month_from_historical(year: int, month: int) -> None:
-    if not HISTORICAL_FILE.exists():
-        return
-
-    rows = read_csv_as_dicts(HISTORICAL_FILE)
-    month_key = f"{year:04d}-{month:02d}"
-
-    kept = [r for r in rows if r.get("mese") not in (month_key, "TOTALE")]
-
-    fieldnames = [
-        "mese",
-        "ore_totali",
-        "tot_lordo_busta",
-        "tot_contributi_busta",
-        "tot_netto_busta",
-        "tot_fuori_busta",
-        "tot_guadagno",
+    basic_turni_rows = [
+        {
+            "id": row["id"],
+            "data": row["data"],
+            "inizio": str(row["inizio"])[:5],
+            "fine": str(row["fine"])[:5],
+        }
+        for row in db_rows
     ]
 
-    with HISTORICAL_FILE.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        if kept:
-            writer.writerows(kept)
-
-
-def regenerate_outputs() -> None:
-    ensure_csv_exists()
-    results = load_csv(DATA_FILE)
+    results = _rows_to_results(basic_turni_rows) if basic_turni_rows else []
     detail_rows = [r.__dict__ for r in results]
-    summary_rows = monthly_summary(results)
+    summary_rows = monthly_summary(results) if results else []
 
     detail_fieldnames = [
         "data",
@@ -135,9 +154,6 @@ def regenerate_outputs() -> None:
         "tot_guadagno",
     ]
 
-    save_csv(DETAIL_FILE, detail_rows, detail_fieldnames)
-    save_csv(SUMMARY_FILE, summary_rows, summary_fieldnames)
-    # scrive lo storico solo dai mesi realmente presenti nei dati
     historical_fieldnames = [
         "mese",
         "ore_totali",
@@ -161,13 +177,26 @@ def regenerate_outputs() -> None:
         for row in summary_rows
     ]
 
+    save_csv(DETAIL_FILE, detail_rows, detail_fieldnames)
+    save_csv(SUMMARY_FILE, summary_rows, summary_fieldnames)
     save_csv(HISTORICAL_FILE, historical_rows, historical_fieldnames)
+    return basic_turni_rows, detail_rows, summary_rows, historical_rows
 
 
 st.set_page_config(page_title="Turni lavoro", layout="wide")
 st.title("Gestione turni lavoro")
+st.caption("I turni sono salvati su Supabase.")
 
-ensure_csv_exists()
+with st.expander("Debug Supabase"):
+    st.write("SUPABASE_URL:", SUPABASE_URL)
+    st.write("Chiave caricata:", bool(SUPABASE_KEY and SUPABASE_KEY != "PASTE_YOUR_ANON_KEY_HERE"))
+    try:
+        debug_info = test_supabase_connection()
+        st.write("Connessione OK")
+        st.write("Numero record visibili:", debug_info["count"])
+        st.write("Anteprima query:", debug_info["data"])
+    except Exception as e:
+        st.error(f"Errore test Supabase: {e}")
 
 with st.form("nuovo_turno"):
     st.subheader("Aggiungi turno")
@@ -187,66 +216,50 @@ with st.form("nuovo_turno"):
 
     if submitted:
         try:
-            append_shift(
+            response = append_shift(
                 data.strftime("%Y-%m-%d"),
                 inizio.strftime("%H:%M"),
                 fine.strftime("%H:%M"),
             )
-
-            regenerate_outputs()
-
             st.success("Turno aggiunto correttamente")
+            st.caption(f"Risposta insert Supabase: {response.data}")
             st.rerun()
-
         except Exception as e:
             st.error(f"Errore: {e}")
 
-
 try:
-    regenerate_outputs()
+    turni_rows, detail_rows, summary_rows, historical_rows = regenerate_outputs()
 except Exception as e:
-    st.error(f"Errore nel ricalcolo dei file: {e}")
-
+    st.error(f"Errore nel ricalcolo dei file o nel collegamento a Supabase: {e}")
+    turni_rows, detail_rows, summary_rows, historical_rows = [], [], [], []
 
 st.subheader("Turni inseriti")
-turni_rows = read_csv_as_dicts(DATA_FILE)
-
 if turni_rows:
     st.dataframe(turni_rows, use_container_width=True)
 else:
     st.dataframe([], use_container_width=True)
     st.caption("Nessun turno inserito")
 
-
 st.subheader("Dettaglio turni calcolati")
-detail_rows = read_csv_as_dicts(DETAIL_FILE)
-
 if detail_rows:
     st.dataframe(detail_rows, use_container_width=True)
 else:
     st.dataframe([], use_container_width=True)
     st.caption("Nessun dettaglio disponibile")
 
-
 st.subheader("Riepilogo mensile")
-summary_rows = read_csv_as_dicts(SUMMARY_FILE)
-
 if summary_rows:
     st.dataframe(summary_rows, use_container_width=True)
 else:
     st.dataframe([], use_container_width=True)
     st.caption("Nessun riepilogo disponibile")
 
-
 st.subheader("Storico mensile totale")
-historical_rows = read_csv_as_dicts(HISTORICAL_FILE)
-
 if historical_rows:
     st.dataframe(historical_rows, use_container_width=True)
 else:
     st.dataframe([], use_container_width=True)
     st.caption("Nessuno storico disponibile")
-
 
 st.subheader("Azioni rapide")
 
@@ -278,19 +291,14 @@ with col2:
     )
 
 with col3:
-    st.caption("Questo elimina tutti i turni del mese scelto e cancella il mese anche dallo storico.")
+    st.caption("Questo elimina tutti i turni del mese scelto dal database Supabase.")
 
 if st.button("Azzera mese selezionato"):
     try:
         removed = delete_shifts_for_month(int(reset_year), int(reset_month))
-        delete_month_from_historical(int(reset_year), int(reset_month))
-        regenerate_outputs()
-
         st.success(
             f"Eliminati {removed} turni di {month_names[int(reset_month)]} {int(reset_year)}"
         )
-
         st.rerun()
-
     except Exception as e:
         st.error(f"Errore nell'azzeramento: {e}")
