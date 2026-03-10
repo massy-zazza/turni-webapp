@@ -10,7 +10,7 @@ from timesheet import load_csv, monthly_summary
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://zuybwlgvjhmufqujpebo.supabase.co")
 # Use the ANON public key from Supabase (NOT the publishable key)
-SUPABASE_KEY = st.secrets.get("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1eWJ3bGd2amhtdWZxdWpwZWJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMTgyNzIsImV4cCI6MjA4ODY5NDI3Mn0.B2dBxK5NSKfFkez-bAHsrRnUUp6MrQZPGZgDAcBIVYs")
+SUPABASE_KEY = st.secrets["SUPABASE_ANON_KEY"]
 
 DATA_FILE = Path("turni.csv")
 DETAIL_FILE = Path("turni_calcolati.csv")
