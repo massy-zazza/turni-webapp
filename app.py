@@ -83,6 +83,12 @@ def delete_shifts_for_month(year: int, month: int) -> int:
     return len(ids)
 
 
+# Delete a single shift by its ID
+def delete_shift_by_id(shift_id: int) -> None:
+    supabase = get_supabase()
+    supabase.table("turni").delete().eq("id", shift_id).execute()
+
+
 def save_csv(path: Path, rows: list[dict], fieldnames: list[str] | None = None) -> None:
     rows = list(rows)
     if fieldnames is None:
@@ -216,7 +222,43 @@ except Exception as e:
 
 st.subheader("Turni inseriti")
 if turni_rows:
-    st.dataframe(turni_rows, use_container_width=True)
+    display_rows = []
+    for row in turni_rows:
+        display_rows.append(
+            {
+                "elimina": False,
+                "id": row["id"],
+                "data": row["data"],
+                "inizio": row["inizio"],
+                "fine": row["fine"],
+            }
+        )
+
+    edited_rows = st.data_editor(
+        display_rows,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["id", "data", "inizio", "fine"],
+        column_config={
+            "elimina": st.column_config.CheckboxColumn("Elimina"),
+            "id": st.column_config.NumberColumn("ID"),
+            "data": st.column_config.TextColumn("Data"),
+            "inizio": st.column_config.TextColumn("Inizio"),
+            "fine": st.column_config.TextColumn("Fine"),
+        },
+        key="turni_editor",
+    )
+
+    if st.button("Elimina turni selezionati"):
+        try:
+            ids_to_delete = [row["id"] for row in edited_rows if row.get("elimina")]
+            for shift_id in ids_to_delete:
+                delete_shift_by_id(shift_id)
+
+            st.success(f"Eliminati {len(ids_to_delete)} turni")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Errore nell'eliminazione dei turni: {e}")
 else:
     st.dataframe([], use_container_width=True)
     st.caption("Nessun turno inserito")
