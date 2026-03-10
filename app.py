@@ -62,13 +62,6 @@ def append_shift(day_str: str, start_str: str, end_str: str):
         .execute()
     )
     return response
-def test_supabase_connection() -> dict:
-    supabase = get_supabase()
-    response = supabase.table("turni").select("id", count="exact").limit(1).execute()
-    return {
-        "count": response.count,
-        "data": response.data,
-    }
 
 
 def delete_shifts_for_month(year: int, month: int) -> int:
@@ -187,17 +180,6 @@ st.set_page_config(page_title="Turni lavoro", layout="wide")
 st.title("Gestione turni lavoro")
 st.caption("I turni sono salvati su Supabase.")
 
-with st.expander("Debug Supabase"):
-    st.write("SUPABASE_URL:", SUPABASE_URL)
-    st.write("Chiave caricata:", bool(SUPABASE_KEY and SUPABASE_KEY != "PASTE_YOUR_ANON_KEY_HERE"))
-    try:
-        debug_info = test_supabase_connection()
-        st.write("Connessione OK")
-        st.write("Numero record visibili:", debug_info["count"])
-        st.write("Anteprima query:", debug_info["data"])
-    except Exception as e:
-        st.error(f"Errore test Supabase: {e}")
-
 with st.form("nuovo_turno"):
     st.subheader("Aggiungi turno")
 
@@ -216,13 +198,12 @@ with st.form("nuovo_turno"):
 
     if submitted:
         try:
-            response = append_shift(
+            append_shift(
                 data.strftime("%Y-%m-%d"),
                 inizio.strftime("%H:%M"),
                 fine.strftime("%H:%M"),
             )
             st.success("Turno aggiunto correttamente")
-            st.caption(f"Risposta insert Supabase: {response.data}")
             st.rerun()
         except Exception as e:
             st.error(f"Errore: {e}")
