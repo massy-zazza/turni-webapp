@@ -108,10 +108,11 @@ def regenerate_outputs() -> tuple[list[dict], list[dict], list[dict], list[dict]
 
     basic_turni_rows = [
         {
-            "id": row["id"],
             "data": row["data"],
-            "inizio": str(row["inizio"])[:5],
-            "fine": str(row["fine"])[:5],
+            "inizio": row["inizio"],
+            "fine": row["fine"],
+            "id": row["id"],
+            "elimina": False,
         }
         for row in db_rows
     ]
@@ -226,11 +227,11 @@ if turni_rows:
     for row in turni_rows:
         display_rows.append(
             {
-                "elimina": False,
-                "id": row["id"],
                 "data": row["data"],
                 "inizio": row["inizio"],
                 "fine": row["fine"],
+                "id": row["id"],
+                "elimina": False,
             }
         )
 
@@ -240,11 +241,11 @@ if turni_rows:
         hide_index=True,
         disabled=["id", "data", "inizio", "fine"],
         column_config={
-            "elimina": st.column_config.CheckboxColumn("Elimina"),
-            "id": st.column_config.NumberColumn("ID"),
             "data": st.column_config.TextColumn("Data"),
             "inizio": st.column_config.TextColumn("Inizio"),
             "fine": st.column_config.TextColumn("Fine"),
+            "id": st.column_config.NumberColumn("ID"),
+            "elimina": st.column_config.CheckboxColumn("Elimina"),
         },
         key="turni_editor",
     )
